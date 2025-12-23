@@ -46,7 +46,6 @@ class OutputHandler:
             lines.append(f'Mapping: {result.full_path}')
         
         lines.append(f'Reasoning: {result.reasoning}')
-        lines.append(f'Confidence: {result.confidence_score:.2f}')
         lines.append('')
         
         return '\n'.join(lines)
@@ -74,7 +73,6 @@ class OutputHandler:
         mapped = sum(1 for r in results if not r.is_unmapped and not r.is_error)
         unmapped = sum(1 for r in results if r.is_unmapped)
         errors = sum(1 for r in results if r.is_error)
-        avg_confidence = sum(r.confidence_score for r in results) / total if total > 0 else 0
         
         print('=' * 60)
         print('SUMMARY')
@@ -83,7 +81,6 @@ class OutputHandler:
         print(f'Successfully mapped: {mapped}')
         print(f'Unmapped: {unmapped}')
         print(f'Errors: {errors}')
-        print(f'Average confidence: {avg_confidence:.2f}')
         print('=' * 60)
     
     def write_json(self, results: List[MappingResult], filename: str = 'results.json') -> str:
@@ -115,7 +112,6 @@ class OutputHandler:
         mapped = sum(1 for r in results if not r.is_unmapped and not r.is_error)
         unmapped = sum(1 for r in results if r.is_unmapped)
         errors = sum(1 for r in results if r.is_error)
-        avg_confidence = sum(r.confidence_score for r in results) / total if total > 0 else 0
         
         category_counts = {}
         for r in results:
@@ -128,6 +124,5 @@ class OutputHandler:
             'successfully_mapped': mapped,
             'unmapped': unmapped,
             'errors': errors,
-            'average_confidence': round(avg_confidence, 2),
             'category_distribution': category_counts
         }

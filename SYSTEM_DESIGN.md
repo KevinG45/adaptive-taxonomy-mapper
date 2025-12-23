@@ -1,188 +1,136 @@
 # System Design Document
 
-## Overview
+## What This Document Covers
 
-This document addresses three scaling and reliability challenges for the Adaptive Taxonomy Mapper when deployed in a production environment.
-
----
-
-## 1. Handling a Taxonomy with 5,000 Categories
-
-### Problem
-
-The current implementation uses linear pattern matching against each category. With 5,000 categories, this approach becomes computationally expensive and difficult to maintain.
-
-### Solution: Hierarchical Indexing with Inverted Lookup
-
-**Data Structure Changes:**
-
-```
-taxonomy_index = {
-    "keyword": ["category_1", "category_5", "category_89"],
-    "phrase_pattern": ["category_12", "category_340"],
-    ...
-}
-```
-
-Instead of iterating through all 5,000 categories for each input, build an inverted index mapping keywords and patterns to their associated categories.
-
-**Process:**
-
-1. Extract tokens from input text
-2. Query the inverted index to get candidate categories (typically 10-50)
-3. Score only the candidate set against full pattern rules
-4. Select the highest-scoring match
-
-**Complexity Reduction:**
-
-- Current: O(n) where n = number of categories
-- Proposed: O(k) where k = number of matching candidates (k << n)
-
-**Additional Measures:**
-
-- Group categories by parent genre first (e.g., filter to "Horror" subcategories before detailed matching)
-- Cache frequently matched patterns using an LRU cache
-- Store patterns in a trie structure for prefix-based matching
+There are three practical questions that come up when thinking about taking this prototype to production. I have addressed each below.
 
 ---
 
-## 2. Minimizing Costs at 1 Million Stories per Month
+## 1. What if the taxonomy grows to 5,000 categories?
 
-### Problem
+The current prompt includes all 12 subcategories directly in the context. With 5,000 categories, that would blow past token limits and make the model less accurate.
 
-Processing 1 million stories monthly requires optimization for both compute time and, if using external services, API costs.
+Here is how I would handle it:
 
-### Solution: Tiered Processing Pipeline
+**Stage 1: Narrow down candidates first**
 
-**Tier 1: Rule-Based Fast Path (handles ~70% of cases)**
+Before calling the LLM, run a lightweight filter to reduce 5,000 categories to maybe 20-50 candidates. This could be:
+- Keyword matching between the snippet and category names/descriptions
+- Embedding similarity (vectorize the snippet, compare against pre-computed category embeddings)
+- A fast classifier that predicts the parent genre (Romance, Horror, Sci-Fi, etc.)
 
-The current deterministic engine handles clear-cut cases with no external dependencies. Stories with high-confidence matches (score > threshold) are resolved here.
+**Stage 2: LLM picks from the shortlist**
 
-Cost: Near zero (CPU only)
+The prompt now only includes the 20-50 candidate categories. The model has enough context to make a good decision without being overwhelmed.
 
-**Tier 2: Batch Processing with Caching**
+**Stage 3: Validate and fallback**
 
-For the remaining 30%:
+If the LLM picks something not in the candidate list (unlikely but possible), either reject it or run a second pass with a broader candidate set.
 
-1. **Content Hashing:** Generate a hash of normalized text. Check cache for previously processed identical or near-identical content.
-
-2. **Similarity Clustering:** Group similar stories and process representative samples. Apply results to cluster members.
-
-3. **Batch Windows:** Accumulate low-confidence cases and process in scheduled batches during off-peak hours.
-
-**Tier 3: Human Review Queue (edge cases only)**
-
-Stories that fail both automated tiers go to a review queue. Human decisions feed back into the rule set.
-
-**Cost Estimates (1M stories/month):**
-
-| Tier | Volume | Cost |
-|------|--------|------|
-| Rule-based | 700,000 | Compute only |
-| Cached/Batched | 280,000 | Minimal |
-| Human Review | 20,000 | Labor cost |
-
-**Infrastructure:**
-
-- Use message queues (Redis, RabbitMQ) for async processing
-- Horizontal scaling with stateless workers
-- Store results in a lookup table to avoid reprocessing
+This two-stage approach keeps the LLM focused while scaling to large taxonomies.
 
 ---
 
-## 3. Preventing Hallucinated Sub-Genres
+## 2. How do you keep costs down at 1 million stories per month?
 
-### Problem
+LLM API calls add up fast. At 1 million stories, even cheap models become expensive.
 
-A system must never output a category that does not exist in the taxonomy. This is critical for downstream recommendation engines.
+**Strategy 1: Cache aggressively**
 
-### Solution: Output Validation Layer
+Hash each story snippet and check if we have seen it before. Duplicate or near-duplicate content gets the cached result. In a platform with user-generated content, duplicates are common.
 
-**Approach 1: Closed Vocabulary Enforcement**
+**Strategy 2: Batch by similarity**
 
-The inference engine only outputs values from a pre-loaded whitelist:
+Group similar stories together using embeddings or simple text hashing. Process one representative story from each cluster, apply the result to the whole cluster. This can cut API calls by 50-70% for repetitive content.
 
-```python
-VALID_SUBCATEGORIES = taxonomy.get_all_subcategories()
+**Strategy 3: Use a tiered model approach**
 
-def validate_output(category):
-    if category.lower() not in VALID_SUBCATEGORIES:
-        return "[UNMAPPED]"
-    return category
-```
+- Tier 1: Run a small, cheap model first (like Llama 3.3 8B or a fine-tuned classifier)
+- Tier 2: Only escalate to the larger model (70B) for ambiguous cases where Tier 1 confidence is low
 
-Every output passes through this gate before being returned.
+For this prototype I used Llama 3.3 70B through Groq, which has generous free tier limits. In production, you could run smaller models locally or use a mix of providers.
 
-**Approach 2: Structured Output Schema**
+**Strategy 4: Async batch processing**
 
-Define the output as an enum rather than free text:
-
-```python
-from enum import Enum
-
-class Subcategory(Enum):
-    SLOW_BURN = "Slow-burn"
-    ENEMIES_TO_LOVERS = "Enemies-to-Lovers"
-    # ... all valid categories
-```
-
-The engine returns enum members, making invalid outputs impossible at the type level.
-
-**Approach 3: Post-Processing Verification**
-
-If using any probabilistic component in future:
-
-1. Parse the output
-2. Fuzzy-match against the taxonomy (handle minor variations)
-3. Reject if similarity score below threshold
-4. Log rejected outputs for pattern analysis
-
-**Current Implementation:**
-
-This prototype uses Approach 1. The `TaxonomyLoader` class maintains a set of valid subcategories, and `InferenceEngine.map_single()` only returns categories present in that set. Content that cannot be mapped is explicitly marked `[UNMAPPED]` rather than forced into an incorrect category.
+Instead of processing stories in real-time, queue them and process in batches during off-peak hours. This allows for better rate limit management and lets you take advantage of batch pricing.
 
 ---
 
-## Architecture Summary
+## 3. How do you prevent the system from inventing categories?
+
+This is the hallucination problem. The LLM might confidently output "Paranormal Romance" even though that category does not exist in the taxonomy.
+
+**How I handled it in this prototype:**
+
+The `_validate_category` function checks every LLM output against a whitelist built from taxonomy.json. If the output does not match any valid subcategory, it gets rejected.
 
 ```
-Input (tags + snippet)
-        |
-        v
-+-------------------+
-|  Text Analyzer    |  <- Keyword extraction, pattern matching
-+-------------------+
-        |
-        v
-+-------------------+
-|  Inference Engine |  <- Scoring, category selection
-+-------------------+
-        |
-        v
-+-------------------+
-|  Taxonomy Loader  |  <- Validation against whitelist
-+-------------------+
-        |
-        v
-Output (full path or [UNMAPPED])
+LLM says "Paranormal Romance"
+    |
+    v
+Check: is "Paranormal Romance" in valid_categories?
+    |
+    v
+No -> Mark as error, do not use this output
+```
+
+**Additional safeguards for production:**
+
+1. **Constrained output format**: The prompt explicitly lists valid categories and asks the model to pick from that list only. This reduces (but does not eliminate) hallucination.
+
+2. **Temperature control**: I set temperature to 0.1 to make outputs more deterministic and less creative.
+
+3. **Fuzzy matching fallback**: If the model outputs something close but not exact (like "Gothic Horror" instead of "Gothic"), the validator can fuzzy-match to the closest valid category.
+
+4. **Logging and alerts**: Track cases where validation fails. If a pattern emerges (model keeps inventing the same category), that is a signal to either add that category or adjust the prompt.
+
+The key insight is: never trust LLM output directly. Always validate against the source of truth (the taxonomy JSON).
+
+---
+
+## How the pieces fit together
+
+```
+Story comes in (tags + snippet)
+       |
+       v
+Build prompt with taxonomy categories and rules
+       |
+       v
+Call LLM (Groq/Llama 3.3 70B)
+       |
+       v
+Parse response to extract category and reasoning
+       |
+       v
+Validate category against taxonomy whitelist
+       |
+       v
+Result goes out (full path like Fiction > Horror > Gothic, or [UNMAPPED])
 ```
 
 ---
 
-## Trade-offs and Decisions
+## Prompt Design
 
-| Decision | Rationale |
-|----------|-----------|
-| Rule-based over LLM | Deterministic, no API costs, no hallucination risk |
-| NLTK for tokenization | Lightweight, well-tested, no network dependency |
-| Keyword + phrase patterns | Balances precision with maintainability |
-| Explicit [UNMAPPED] | Preserves taxonomy integrity over forced mappings |
+The prompt follows a structured format:
+
+1. **Role definition**: "You are a story classifier for a fiction platform"
+2. **Rules section**: Three explicit rules (Context Wins, Honesty, Pick From List)
+3. **Valid categories**: Listed explicitly to constrain output
+4. **Input section**: User tags and story snippet clearly labeled
+5. **Output format**: Exact format specified to make parsing reliable
+
+This structure gives the model clear constraints while allowing it to reason about the content.
 
 ---
 
-## Future Improvements
+## Why I made these choices
 
-1. Add confidence thresholds to flag borderline cases for review
-2. Implement pattern learning from human-corrected mappings
-3. Support multi-label classification for ambiguous content
-4. Add A/B testing framework to measure mapping quality
+| Choice | Reason |
+|--------|--------|
+| Groq + Llama 3.3 70B | Free tier, fast inference, good reasoning ability |
+| Low temperature (0.1) | More deterministic outputs, less hallucination |
+| Explicit output format | Makes response parsing reliable |
+| Whitelist validation | Catches any hallucinated categories before they reach production |
+| Separate reasoning field | Provides transparency into model decisions |
