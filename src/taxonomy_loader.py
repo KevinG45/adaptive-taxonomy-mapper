@@ -1,8 +1,5 @@
 """
-Taxonomy Loader Module
-
-Handles loading the taxonomy JSON and building lookup structures
-for efficient category resolution.
+Taxonomy Loader - handles loading and querying the category hierarchy.
 """
 
 import json
@@ -11,85 +8,54 @@ from typing import Optional
 
 
 class TaxonomyLoader:
-    """Loads and manages the internal taxonomy hierarchy."""
-    
+    """Loads taxonomy JSON and provides lookup methods for categories."""
+
     def __init__(self, taxonomy_path: str):
         self.taxonomy_path = Path(taxonomy_path)
-        self.raw_taxonomy: dict = {}
-        self.subcategory_map: dict = {}
-        self.parent_map: dict = {}
-        self.all_subcategories: set = set()
+        self.raw_taxonomy = {}
+        self.subcategory_map = {}  # subcategory -> {root, parent, subcategory}
+        self.parent_map = {}       # parent -> [subcategories]
+        self.all_subcategories = set()
         self._load()
-    
-    def _load(self) -> None:
-        """Load taxonomy from JSON file and build lookup structures."""
+
+    def _load(self):
+        """Load taxonomy from file and build lookup structures."""
         with open(self.taxonomy_path, 'r', encoding='utf-8') as f:
             self.raw_taxonomy = json.load(f)
         self._build_maps()
-    
-    def _build_maps(self) -> None:
-        """
-        Build flattened lookup maps from the nested taxonomy.
-        
-        Creates:
-        - subcategory_map: subcategory -> (root, parent, subcategory)
-        - parent_map: parent -> list of subcategories
-        - all_subcategories: set of all valid subcategory names
-        """
-        for root_category, genres in self.raw_taxonomy.items():
-            for parent_category, subcategories in genres.items():
-                self.parent_map[parent_category.lower()] = [s.lower() for s in subcategories]
+
+    def _build_maps(self):
+        """Build flattened lookup maps from nested taxonomy structure."""
+        for root, genres in self.raw_taxonomy.items():
+            for parent, subcategories in genres.items():
+                self.parent_map[parent.lower()] = [s.lower() for s in subcategories]
+
                 for subcategory in subcategories:
                     key = subcategory.lower()
                     self.subcategory_map[key] = {
-                        'root': root_category,
-                        'parent': parent_category,
+                        'root': root,
+                        'parent': parent,
                         'subcategory': subcategory
                     }
                     self.all_subcategories.add(key)
-    
+
     def get_full_path(self, subcategory: str) -> Optional[str]:
-        """
-        Get the full taxonomy path for a subcategory.
-        
-        Args:
-            subcategory: The subcategory name (case-insensitive)
-            
-        Returns:
-            Full path string like 'Fiction > Horror > Gothic' or None if not found
-        """
+        """Get full path like 'Fiction > Horror > Gothic' for a subcategory."""
         key = subcategory.lower()
         if key not in self.subcategory_map:
             return None
-        
+
         info = self.subcategory_map[key]
         return f"{info['root']} > {info['parent']} > {info['subcategory']}"
-    
+
     def get_hierarchy_info(self, subcategory: str) -> Optional[dict]:
-        """
-        Get structured hierarchy information for a subcategory.
-        
-        Args:
-            subcategory: The subcategory name (case-insensitive)
-            
-        Returns:
-            Dict with root, parent, subcategory keys or None if not found
-        """
-        key = subcategory.lower()
-        return self.subcategory_map.get(key)
-    
+        """Get dict with root, parent, subcategory for a given subcategory."""
+        return self.subcategory_map.get(subcategory.lower())
+
     def is_valid_subcategory(self, name: str) -> bool:
-        """Check if a name is a valid subcategory in the taxonomy."""
+        """Check if name is a valid subcategory."""
         return name.lower() in self.all_subcategories
-    
-    def get_subcategories_for_parent(self, parent: str) -> list:
-        """Get all subcategories under a parent category."""
-        return self.parent_map.get(parent.lower(), [])
-    
-    def get_all_parents(self) -> list:
-        """Get all parent category names."""
-        return list(self.parent_map.keys())
-    
+
     def get_all_subcategories(self) -> list:
-        """Get all subcategory names."""
+        """Return all subcategory names."""
         return list(self.all_subcategories)

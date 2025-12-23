@@ -1,128 +1,80 @@
 """
-Output Handler Module
-
-Manages formatting and writing of inference results
-to both console and JSON file outputs.
+Output Handler - formats and writes classification results.
 """
 
 import json
 from pathlib import Path
 from typing import List
+
 from src.inference_engine import MappingResult
 
 
 class OutputHandler:
-    """
-    Handles output formatting for taxonomy mapping results.
-    
-    Supports both console display and JSON file export.
-    """
-    
+    """Handles console display and JSON export of results."""
+
     def __init__(self, output_dir: str = 'output'):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(exist_ok=True)
-    
-    def format_console_result(self, result: MappingResult) -> str:
-        """
-        Format a single result for console display.
-        
-        Args:
-            result: MappingResult object
-            
-        Returns:
-            Formatted string for terminal output
-        """
-        lines = []
-        lines.append(f'Case {result.case_id}')
-        lines.append('-' * 50)
-        lines.append(f'Tags: {result.user_tags}')
-        lines.append(f'Snippet: {result.snippet[:80]}...' if len(result.snippet) > 80 else f'Snippet: {result.snippet}')
-        
-        if result.is_error:
-            lines.append(f'Status: [ERROR]')
-        elif result.is_unmapped:
-            lines.append(f'Mapping: [UNMAPPED]')
-        else:
-            lines.append(f'Mapping: {result.full_path}')
-        
-        lines.append(f'Reasoning: {result.reasoning}')
-        lines.append('')
-        
-        return '\n'.join(lines)
-    
-    def print_results(self, results: List[MappingResult]) -> None:
-        """
-        Print all results to console.
-        
-        Args:
-            results: List of MappingResult objects
-        """
+
+    def print_results(self, results: List[MappingResult]):
+        """Print all results to console with summary."""
         print('=' * 60)
-        print('TAXONOMY MAPPING RESULTS')
-        print('=' * 60)
-        print('')
-        
-        for result in results:
-            print(self.format_console_result(result))
-        
+        print('RESULTS')
+        print('=' * 60 + '\n')
+
+        for r in results:
+            print(f'Case {r.case_id}')
+            print('-' * 40)
+            print(f'Tags: {r.user_tags}')
+            snippet_display = r.snippet[:70] + '...' if len(r.snippet) > 70 else r.snippet
+            print(f'Snippet: {snippet_display}')
+
+            if r.is_error:
+                print('Mapping: [ERROR]')
+            elif r.is_unmapped:
+                print('Mapping: [UNMAPPED]')
+            else:
+                print(f'Mapping: {r.full_path}')
+
+            print(f'Reasoning: {r.reasoning}\n')
+
         self._print_summary(results)
-    
-    def _print_summary(self, results: List[MappingResult]) -> None:
+
+    def _print_summary(self, results: List[MappingResult]):
         """Print summary statistics."""
         total = len(results)
         mapped = sum(1 for r in results if not r.is_unmapped and not r.is_error)
-        unmapped = sum(1 for r in results if r.is_unmapped)
+        unmapped = sum(1 for r in results if r.is_unmapped and not r.is_error)
         errors = sum(1 for r in results if r.is_error)
-        
+
         print('=' * 60)
         print('SUMMARY')
         print('=' * 60)
-        print(f'Total cases: {total}')
-        print(f'Successfully mapped: {mapped}')
-        print(f'Unmapped: {unmapped}')
-        print(f'Errors: {errors}')
+        print(f'Total: {total} | Mapped: {mapped} | Unmapped: {unmapped} | Errors: {errors}')
         print('=' * 60)
-    
+
     def write_json(self, results: List[MappingResult], filename: str = 'results.json') -> str:
-        """
-        Write results to JSON file.
-        
-        Args:
-            results: List of MappingResult objects
-            filename: Output filename
-            
-        Returns:
-            Path to the written file
-        """
+        """Write results to JSON file."""
         output_path = self.output_dir / filename
-        
-        output_data = {
-            'results': [r.to_dict() for r in results],
-            'summary': self._build_summary(results)
-        }
-        
-        with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(output_data, f, indent=2, ensure_ascii=False)
-        
-        return str(output_path)
-    
-    def _build_summary(self, results: List[MappingResult]) -> dict:
-        """Build summary statistics dictionary."""
-        total = len(results)
-        mapped = sum(1 for r in results if not r.is_unmapped and not r.is_error)
-        unmapped = sum(1 for r in results if r.is_unmapped)
-        errors = sum(1 for r in results if r.is_error)
-        
+
+        # Build category distribution
         category_counts = {}
         for r in results:
-            if r.mapped_category and not r.is_unmapped and not r.is_error:
-                cat = r.mapped_category
-                category_counts[cat] = category_counts.get(cat, 0) + 1
-        
-        return {
-            'total_cases': total,
-            'successfully_mapped': mapped,
-            'unmapped': unmapped,
-            'errors': errors,
-            'category_distribution': category_counts
+            if r.mapped_category and not r.is_unmapped:
+                category_counts[r.mapped_category] = category_counts.get(r.mapped_category, 0) + 1
+
+        output_data = {
+            'results': [r.to_dict() for r in results],
+            'summary': {
+                'total': len(results),
+                'mapped': sum(1 for r in results if not r.is_unmapped and not r.is_error),
+                'unmapped': sum(1 for r in results if r.is_unmapped and not r.is_error),
+                'errors': sum(1 for r in results if r.is_error),
+                'categories': category_counts
+            }
         }
+
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(output_data, f, indent=2)
+
+        return str(output_path)
