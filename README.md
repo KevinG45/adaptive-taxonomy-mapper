@@ -1,56 +1,54 @@
 # Adaptive Taxonomy Mapper
 
-A rule-based inference engine that maps user-generated content tags to a structured internal taxonomy.
+Maps messy user-generated tags to a structured internal taxonomy using LLM-based classification.
 
-## Overview
+## The Problem
 
-This prototype prioritizes deterministic, explainable logic over probabilistic LLM outputs to ensure taxonomy integrity and prevent hallucinations.
+Users tag stories with vague terms like "Love" or "Scary". The recommendation engine needs precise categories like "Enemies-to-Lovers" or "Gothic Horror".
 
-## Features
+## How It Works
 
-- Context-aware mapping: Story content overrides misleading user tags
-- Hierarchy compliance: Outputs follow the defined taxonomy structure
-- Unmapped detection: Flags content that does not fit the taxonomy
-- Reasoning logs: Each mapping includes an explanation
+1. Story snippet and user tags go into a prompt with explicit classification rules
+2. LLM (Llama 3.3 70B via Groq) picks the best category
+3. Output is validated against the taxonomy to prevent hallucination
+4. Non-fiction content gets flagged as [UNMAPPED]
 
-## Requirements
+## Three Core Rules
 
-- Python 3.10+
-- nltk
+- **Context Wins**: Story content overrides misleading tags
+- **Honesty**: Content outside the taxonomy is not force-fitted
+- **Hierarchy**: Only categories from taxonomy.json are allowed
 
-## Installation
+## Setup
 
 ```bash
 pip install -r requirements.txt
-python -c "import nltk; nltk.download('punkt'); nltk.download('stopwords'); nltk.download('wordnet')"
 ```
 
-## Usage
+Create a `.env` file with your Groq API key:
+```
+GROQ_API_KEY=your_key_here
+```
+
+## Run
 
 ```bash
 python main.py
 ```
 
-Output is written to both console and `output/results.json`.
+Results go to console and `output/results.json`.
 
 ## Project Structure
 
 ```
-adaptive-taxonomy-mapper/
 ├── data/
-│   ├── taxonomy.json      # Internal category hierarchy
-│   └── test_cases.json    # Golden set of 10 test cases
+│   ├── taxonomy.json       # Category hierarchy
+│   └── test_cases.json     # 10 test cases
 ├── src/
-│   ├── taxonomy_loader.py # Taxonomy parsing and lookup
-│   ├── text_analyzer.py   # Text preprocessing and keyword extraction
-│   ├── inference_engine.py# Core mapping logic
-│   └── output_handler.py  # Result formatting
-├── output/                # Generated results
-├── main.py               # Entry point
-├── requirements.txt
-└── SYSTEM_DESIGN.md      # Architecture decisions
+│   ├── taxonomy_loader.py  # Loads and queries taxonomy
+│   ├── inference_engine.py # LLM classification + validation
+│   └── output_handler.py   # Result formatting
+├── main.py                 # Entry point
+├── SYSTEM_DESIGN.md        # Scaling questions answered
+└── REASONING_LOG.md        # Why each case was mapped that way
 ```
-
-## License
-
-For evaluation purposes only.
